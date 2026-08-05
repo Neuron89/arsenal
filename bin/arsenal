@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+# arsenal — a categorized fzf launcher for the pentest toolkit.
+# Usage: arsenal            → browse & launch
+#        arsenal --preview NAME   (internal: renders the preview pane)
+#
+# Data model, one record per line:  category | name | command | kind | blurb | example
+#   kind: gui = launch detached | cli = prefill an editable command line | tui = run as-is
+# Keep the table the single source of truth; both the list and the preview read it.
+
+set -uo pipefail   # NOT -e: tools exiting non-zero must not kill the launcher
+
+DATA() {
+cat <<'EOF'
+Recon / OSINT|nmap|nmap|cli|The workhorse port scanner & service/OS fingerprinter. Start every engagement here.|nmap -sVC -oA scan/TARGET TARGET
+Recon / OSINT|masscan|masscan|cli|Internet-scale SYN scanner — sweeps huge ranges in minutes, then hand ports to nmap.|masscan 10.0.0.0/24 -p1-65535 --rate 10000
+Recon / OSINT|arp-scan|arp-scan|cli|Fast layer-2 host discovery on the local segment. Sees hosts that block ping.|arp-scan --localnet
+Recon / OSINT|netdiscover|netdiscover|tui|Passive/active ARP recon — great for mapping an unknown LAN you just plugged into.|netdiscover -i wlan0
+Recon / OSINT|fping|fping|cli|Sweep-ping a whole subnet at once to enumerate live hosts.|fping -a -g 10.0.0.0/24 2>/dev/null
+Recon / OSINT|dig|dig|cli|DNS Swiss-army knife — records, zone transfers, reverse lookups.|dig ANY example.com @NS_SERVER
+Recon / OSINT|dnsrecon|dnsrecon|cli|Automated DNS enumeration: brute subdomains, SRV, zone transfer attempts.|dnsrecon -d example.com
+Recon / OSINT|amass|amass|cli|Deep subdomain/attack-surface mapping from dozens of passive sources.|amass enum -d example.com
+Recon / OSINT|theHarvester|theHarvester|cli|Emails, subdomains, hosts & names from public sources for a domain.|theHarvester -d example.com -b duckduckgo,crtsh
+Recon / OSINT|sherlock|sherlock|cli|Hunt a username across hundreds of social networks.|sherlock USERNAME
+Recon / OSINT|ipcalc|ipcalc|cli|Sanity-check subnets, ranges & masks before you scan them.|ipcalc 10.0.0.0/22
+Web|nikto|nikto|cli|Fast baseline web-server scanner — misconfigs, stale software, risky files.|nikto -h http://TARGET
+Web|whatweb|whatweb|cli|Fingerprint the stack: CMS, frameworks, servers, JS libs.|whatweb -a3 http://TARGET
+Web|wafw00f|wafw00f|cli|Detect & identify which WAF sits in front of a target.|wafw00f http://TARGET
+Web|gobuster|gobuster|cli|Fast content/DNS/vhost brute-forcer. Go-to for directory discovery.|gobuster dir -u http://TARGET -w /usr/share/seclists/Discovery/Web-Content/common.txt
+Web|feroxbuster|feroxbuster|cli|Recursive content discovery in Rust — auto-digs into found dirs.|feroxbuster -u http://TARGET -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt
+Web|ffuf|ffuf|cli|Blazing fuzzer for dirs, params, vhosts & auth. The FUZZ keyword goes anywhere.|ffuf -u http://TARGET/FUZZ -w /usr/share/seclists/Discovery/Web-Content/common.txt
+Web|nuclei|nuclei|cli|Template-driven vuln scanner — thousands of community CVE/misconfig checks.|nuclei -u http://TARGET
+Web|httpx|httpx|cli|Probe a list of hosts for live HTTP, titles, status, tech. Pipes well with subfinder/amass.|httpx -l hosts.txt -title -tech-detect
+Web|sqlmap|sqlmap|cli|Automated SQL-injection detection & exploitation, all-in-one.|sqlmap -u 'http://TARGET/?id=1' --batch --dbs
+Web|wpscan|wpscan|cli|WordPress-specific scanner: plugins, themes, users, known vulns.|wpscan --url http://TARGET --enumerate u,vp
+Web|mitmproxy|mitmproxy|tui|Interactive TUI intercepting HTTP/S proxy — inspect & tamper traffic.|mitmproxy -p 8080
+Web|Burp Suite|burpsuite|gui|The industry-standard web proxy: intercept, repeater, intruder. (GUI)|
+Web|OWASP ZAP|zaproxy|gui|Free full web app scanner & intercepting proxy. (GUI)|
+Wireless|wifite|wifite|tui|Automated Wi-Fi auditing — walks you through WPA/WEP/WPS attacks end-to-end.|sudo wifite -i wlan1
+Wireless|airodump-ng|airodump-ng|tui|Live capture & survey of nearby APs and clients; grabs WPA handshakes.|sudo airodump-ng wlan1mon
+Wireless|aircrack-ng|aircrack-ng|cli|Crack captured WEP/WPA handshakes against a wordlist.|aircrack-ng -w /usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt cap.cap
+Wireless|airmon-ng|airmon-ng|cli|Flip an adapter into monitor mode (and kill interfering procs).|sudo airmon-ng start wlan1
+Wireless|angryoxide|angryoxide|tui|Modern all-in-one Wi-Fi attack TUI — your MT7612U's preferred tool.|sudo angryoxide -i wlan1mon
+Wireless|hcxdumptool|hcxdumptool|cli|Capture PMKIDs/handshakes straight to hashcat format, no client needed.|sudo hcxdumptool -i wlan1mon -o dump.pcapng
+Wireless|kismet|kismet|tui|Passive wireless detector, sniffer & IDS with a web UI.|sudo kismet -c wlan1mon
+Wireless|reaver|reaver|cli|WPS PIN brute-force to recover the WPA passphrase.|sudo reaver -i wlan1mon -b BSSID -vv
+Cracking|hashcat|hashcat|cli|GPU password cracker — fastest way through captured hashes. -m sets the type.|hashcat -m 22000 hash.hc22000 /usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt
+Cracking|john|john|cli|CPU cracker with great format auto-detect & rules; pairs with *2john tools.|john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt hashes.txt
+Cracking|hydra|hydra|cli|Online brute-forcer for network logins (ssh, ftp, http-form, rdp...).|hydra -l admin -P rockyou.txt TARGET ssh
+Cracking|medusa|medusa|cli|Parallel network login brute-forcer, hydra alternative.|medusa -h TARGET -u admin -P rockyou.txt -M ssh
+Cracking|ncrack|ncrack|cli|Nmap-family network auth cracker, tuned for speed at scale.|ncrack -p 22 --user admin -P rockyou.txt TARGET
+Cracking|hashid|hashid|cli|Identify an unknown hash type before you try to crack it.|hashid 'HASH'
+Cracking|crunch|crunch|cli|Generate custom wordlists by pattern/charset/length.|crunch 8 8 -t @@@@%%%% -o wordlist.txt
+Cracking|cewl|cewl|cli|Spider a site to build a target-specific wordlist from its own words.|cewl http://TARGET -w custom.txt
+Exploitation|Metasploit|msfconsole|tui|The exploitation framework — exploits, payloads, post-modules, sessions.|msfconsole -q
+Exploitation|msfvenom|msfvenom|cli|Standalone payload generator/encoder for shells & implants.|msfvenom -p linux/x64/shell_reverse_tcp LHOST=IP LPORT=4444 -f elf -o shell
+Exploitation|searchsploit|searchsploit|cli|Offline Exploit-DB search — find PoC code for a product/version.|searchsploit apache 2.4
+AD / Internal|netexec|nxc|cli|Swiss-army knife for SMB/WinRM/LDAP/MSSQL across a network (CrackMapExec successor).|nxc smb 10.0.0.0/24 -u user -p pass
+AD / Internal|responder|responder|tui|Poison LLMNR/NBT-NS/mDNS to capture NetNTLM hashes on a LAN.|sudo responder -I eth0
+AD / Internal|enum4linux-ng|enum4linux-ng|cli|Enumerate SMB/RPC: shares, users, groups, policy — the modern rewrite.|enum4linux-ng -A TARGET
+AD / Internal|smbmap|smbmap|cli|Enumerate SMB shares & permissions, browse/exec across hosts.|smbmap -H TARGET -u guest -p ''
+AD / Internal|smbclient|smbclient|cli|Interactive SMB client — list & pull files from shares.|smbclient -L //TARGET -N
+AD / Internal|bloodhound-python|bloodhound-python|cli|Collect AD graph data (Python ingestor) for BloodHound attack-path analysis.|bloodhound-python -d DOMAIN -u user -p pass -c all -ns DC_IP
+AD / Internal|secretsdump|secretsdump.py|cli|Dump hashes/secrets (SAM, NTDS, LSA) via impacket.|secretsdump.py DOMAIN/user:pass@TARGET
+AD / Internal|GetNPUsers|GetNPUsers.py|cli|AS-REP roast accounts that don't require pre-auth.|GetNPUsers.py DOMAIN/ -usersfile users.txt -no-pass
+RE / Forensics|Ghidra|ghidra|gui|NSA's full reverse-engineering suite & decompiler. (GUI)|
+RE / Forensics|radare2|radare2|tui|Scriptable RE framework — disassemble, debug, patch from the console.|radare2 -A ./binary
+RE / Forensics|rizin|rizin|tui|Modern radare2 fork with cleaner UX; same RE power.|rizin -A ./binary
+RE / Forensics|gdb (pwndbg)|gdb|tui|Debugger with the pwndbg plugin — exploit-dev heaven.|gdb ./binary
+RE / Forensics|binwalk|binwalk|cli|Find & extract embedded files/firmware inside a blob.|binwalk -e firmware.bin
+RE / Forensics|foremost|foremost|cli|Carve files out of a disk image or raw dump by header signatures.|foremost -i image.dd -o carved/
+RE / Forensics|testdisk|testdisk|tui|Recover lost partitions & repair boot sectors.|testdisk
+RE / Forensics|exiftool|exiftool|cli|Read/strip metadata from images, docs & media.|exiftool suspicious.jpg
+RE / Forensics|steghide|steghide|cli|Hide/extract data inside images & audio — CTF stego staple.|steghide extract -sf image.jpg
+RE / Forensics|volatility3|vol|cli|Memory-forensics framework — pull processes, creds & artifacts from RAM dumps.|vol -f mem.raw windows.pslist
+Sniff / MITM|Wireshark|wireshark|gui|The definitive packet analyzer. (GUI)|
+Sniff / MITM|termshark|termshark|tui|Wireshark's power in a terminal UI — great over SSH.|termshark -i eth0
+Sniff / MITM|tcpdump|tcpdump|cli|Lightweight CLI packet capture; write pcaps anywhere.|sudo tcpdump -i eth0 -w cap.pcap
+Sniff / MITM|bettercap|bettercap|tui|The modern network attack Swiss-army knife — MITM, spoof, sniff, probe.|sudo bettercap -iface eth0
+Sniff / MITM|ettercap|ettercap|tui|Classic ARP-poisoning MITM suite with plugins.|sudo ettercap -T -i eth0
+Utility|macchanger|macchanger|cli|Spoof/randomize your MAC before touching a network.|sudo macchanger -r wlan1
+Utility|proxychains4|proxychains4|cli|Force any tool through a SOCKS/HTTP proxy chain (pivot via SSH/Tor).|proxychains4 nmap -sT TARGET
+Utility|socat|socat|cli|Multipurpose relay — upgrade shells, forward ports, bridge sockets.|socat file:$(tty),raw,echo=0 tcp-listen:4444
+Utility|netcat|nc|cli|The TCP/UDP Swiss-army knife — listeners, banners, quick shells.|nc -lvnp 4444
+EOF
+}
+
+# ---- preview mode: render the detail pane for a given tool name -----------------
+if [[ "${1:-}" == "--preview" ]]; then
+  want="${2:-}"
+  # Wrap to the preview pane's actual width (fzf exports it); leave a small margin.
+  W="${FZF_PREVIEW_COLUMNS:-46}"; (( W < 24 )) && W=24
+  wrap=$(( W - 2 )); (( wrap < 20 )) && wrap=20
+  div="$(printf '─%.0s' $(seq 1 "$W"))"
+  bold=$'\e[1m'; dim=$'\e[2m'; cyan=$'\e[36m'; green=$'\e[32m'; yellow=$'\e[33m'; blue=$'\e[34m'; rst=$'\e[0m'
+  while IFS='|' read -r cat name cmd kind blurb example; do
+    [[ "$name" == "$want" ]] || continue
+    printf '%s%s%s\n%s%s%s\n%s%s%s\n\n' "$bold$cyan" "$name" "$rst" "$dim" "$cat" "$rst" "$dim" "$div" "$rst"
+
+    printf '%s%sGood for%s\n' "$bold" "$green" "$rst"
+    printf '%s\n\n' "$blurb" | fold -s -w "$wrap"
+
+    cmdpath="$(command -v "$cmd" 2>/dev/null || echo '(not found)')"
+    printf '%s%sBinary%s\n%s\n\n' "$bold" "$blue" "$rst" "$cmdpath"
+
+    if [[ -n "$example" ]]; then
+      printf '%s%sExample%s\n%s' "$bold" "$yellow" "$rst" "$yellow"
+      printf '%s\n' "$example" | fold -s -w "$wrap"
+      printf '%s\n' "$rst"
+    fi
+
+    printf '%s%sLaunch%s\n' "$bold" "$green" "$rst"
+    case "$kind" in
+      gui) msg="GUI app. ENTER opens a launch menu: run it, or open the man page." ;;
+      *)   msg="Terminal app. ENTER opens a launch menu — help (default), run the example, a custom command, copy to clipboard, or the man page." ;;
+    esac
+    printf '%s\n' "$msg" | fold -s -w "$wrap"
+    exit 0
+  done < <(DATA)
+  exit 0
+fi
+
+# ---- main: build the list, pick, and launch ------------------------------------
+command -v fzf >/dev/null || { echo "arsenal: fzf is required" >&2; exit 1; }
+
+# Resolve our own path so the fzf preview re-invokes THIS file, whether it was
+# run from the repo, a symlink, or an install on PATH.
+SELF="$(realpath -- "$0" 2>/dev/null || echo "$0")"
+
+# Build fzf input: hidden name in col1 (for preview lookup), pretty display after.
+build_list() {
+  while IFS='|' read -r cat name cmd kind blurb example; do
+    # tab-delimited: {1}=name(key)  {2}=category  {3}=name  {4}=full blurb
+    printf '%s\t%-16s\t%-18s\t%s\n' "$name" "$cat" "$name" "$blurb"
+  done < <(DATA)
+}
+
+pause() { echo; IFS= read -rsn1 -p "── press any key to return ──" _ || true; echo; }
+
+# Show a tool's own help/usage in a pager. Terminal tools differ on the flag, so
+# probe --help and -h and keep the meatier output; a few are too interactive to
+# probe safely and go straight to the man page.
+show_help() {
+  local c="$1" a b out=""
+  case "$c" in
+    medusa|john)          out="$(timeout 15 "$c" 2>&1)" ;;   # print usage with no args
+    testdisk|netdiscover) out="" ;;                          # would launch — use man
+    *)
+      a="$(timeout 15 "$c" --help 2>&1)"
+      b="$(timeout 15 "$c" -h     2>&1)"
+      (( ${#a} >= ${#b} )) && out="$a" || out="$b"
+      ;;
+  esac
+  [[ -z "${out// }" ]] && out="$(man "$c" 2>/dev/null | col -bx)"
+  if [[ -z "${out// }" ]]; then
+    printf '\e[31mNo built-in help for %s — try the man page or run it directly.\e[0m\n' "$c"
+    pause; return
+  fi
+  { printf '\e[1;36m# %s — help  (q to quit)\e[0m\n\n' "$c"; printf '%s\n' "$out"; } | less -R
+}
+
+show_man() {
+  if man "$1" >/dev/null 2>&1; then man "$1"; else
+    printf '\e[31mNo man page for %s.\e[0m\n' "$1"; pause
+  fi
+}
+
+# Prefill an editable command line (readline), run it, keep output on screen.
+run_editable() {
+  printf '\e[1;33mEdit the command, ENTER to run · Ctrl-C to cancel:\e[0m\n'
+  local line=""
+  IFS= read -e -i "$1" -r line || true
+  if [[ -n "${line//[[:space:]]/}" ]]; then printf '\n'; eval "$line" || true; fi
+  pause
+}
+
+# Clipboard: prefer Wayland (wl-copy), fall back to X11 (xclip/xsel).
+have_clip() {
+  command -v wl-copy >/dev/null 2>&1 || command -v xclip >/dev/null 2>&1 \
+    || command -v xsel >/dev/null 2>&1
+}
+clip_copy() {  # reads from stdin
+  if   command -v wl-copy >/dev/null 2>&1; then wl-copy
+  elif command -v xclip   >/dev/null 2>&1; then xclip -selection clipboard
+  elif command -v xsel    >/dev/null 2>&1; then xsel --clipboard --input
+  else return 1; fi
+}
+
+# Build a command line and copy it to the clipboard instead of running it.
+copy_cmd() {
+  printf '\e[1;35mEdit the command, ENTER to copy · Ctrl-C to cancel:\e[0m\n'
+  local line=""
+  IFS= read -e -i "$1" -r line || true
+  if [[ -z "${line//[[:space:]]/}" ]]; then pause; return; fi
+  if have_clip && printf '%s' "$line" | clip_copy; then
+    printf '\e[32m✓ copied to clipboard:\e[0m %s\n' "$line"
+  else
+    printf '\e[31mNo clipboard tool found (install wl-clipboard, xclip, or xsel).\e[0m\n'
+    printf 'Command was:\n%s\n' "$line"
+  fi
+  pause
+}
+
+spawn_gui() {
+  printf '\e[32mLaunching %s…\e[0m\n' "$name"
+  setsid nohup "$cmd" >/dev/null 2>&1 < /dev/null &
+  disown 2>/dev/null || true
+  sleep 0.4
+}
+
+# The "how do you want to launch this?" menu. Terminal tools default to Help
+# (first row = fzf's initial cursor); GUI tools default to Launch.
+action_menu() {
+  local -a opts
+  if [[ "$kind" == gui ]]; then
+    opts=(
+      "launch|▶  Launch $name"
+      "man|📖  Open the man page"
+      "back|←  Back to the tool list"
+    )
+  else
+    opts=(
+      "help|❓  Show help / usage         (default)"
+      "example|▶  Run the example command"
+      "custom|⌨  Type a custom command"
+      "copy|📋  Copy a command to clipboard"
+      "man|📖  Open the man page"
+      "back|←  Back to the tool list"
+    )
+  fi
+  printf '%s\n' "${opts[@]}" \
+    | fzf --ansi --delimiter='|' --with-nth=2 --no-preview \
+          --prompt="  $name ❯ " \
+          --header=$'choose how to launch — ESC goes back\n' \
+          --height='~45%' --layout=reverse --border=rounded --info=hidden \
+    | cut -d'|' -f1
+}
+
+# Loop the action menu for the selected tool until Back/ESC.
+launch_tool() {
+  local action
+  while true; do
+    action="$(action_menu)"
+    case "${action:-back}" in
+      back)    return ;;
+      launch)  spawn_gui; return ;;
+      help)    show_help "$cmd" ;;
+      man)     show_man "$cmd" ;;
+      example) run_editable "${example:-$cmd }" ;;
+      custom)  run_editable "$cmd " ;;
+      copy)    copy_cmd "${example:-$cmd }" ;;
+    esac
+  done
+}
+
+# Persistent launcher: keep showing the tool list until ESC / empty selection.
+while true; do
+  sel="$(build_list | sort -t$'\t' -k2,2 -k3,3 \
+    | fzf --ansi --delimiter='\t' --with-nth=2,3,4 \
+          --nth=2,3 \
+          --prompt='  arsenal ❯ ' \
+          --header=$'↑↓ browse · type to filter · ENTER = launch options · ESC quit\n' \
+          --height=100% --layout=reverse --border=rounded --info=inline \
+          --preview="\"$SELF\" --preview {1}" \
+          --preview-window='right,34%,wrap,border-left' \
+    || true)"
+
+  [[ -z "$sel" ]] && break            # ESC or nothing picked → exit the launcher
+  pick="$(printf '%s' "$sel" | cut -f1)"
+
+  # Look the record up via awk so the loop's stdin stays the terminal — otherwise
+  # the interactive `read -e` inside would steal from the data stream.
+  record="$(DATA | awk -F'|' -v p="$pick" '$2==p {print; exit}')"
+  [[ -z "$record" ]] && continue
+  IFS='|' read -r cat name cmd kind blurb example <<<"$record"
+
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    printf '\e[31marsenal: "%s" is not on PATH.\e[0m\n' "$cmd"; pause; continue
+  fi
+
+  launch_tool
+done
