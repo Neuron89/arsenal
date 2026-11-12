@@ -39,7 +39,7 @@ Wireless|wifite|wifite|tui|Automated Wi-Fi auditing — walks you through WPA/WE
 Wireless|airodump-ng|airodump-ng|tui|Live capture & survey of nearby APs and clients; grabs WPA handshakes.|sudo airodump-ng wlan1mon
 Wireless|aircrack-ng|aircrack-ng|cli|Crack captured WEP/WPA handshakes against a wordlist.|aircrack-ng -w /usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt cap.cap
 Wireless|airmon-ng|airmon-ng|cli|Flip an adapter into monitor mode (and kill interfering procs).|sudo airmon-ng start wlan1
-Wireless|angryoxide|angryoxide|tui|Modern all-in-one Wi-Fi attack TUI — your MT7612U's preferred tool.|sudo angryoxide -i wlan1mon
+Wireless|angryoxide|angryoxide|tui|Modern all-in-one Wi-Fi attack TUI — works well with MT7612U adapters.|sudo angryoxide -i wlan1mon
 Wireless|hcxdumptool|hcxdumptool|cli|Capture PMKIDs/handshakes straight to hashcat format, no client needed.|sudo hcxdumptool -i wlan1mon -o dump.pcapng
 Wireless|kismet|kismet|tui|Passive wireless detector, sniffer & IDS with a web UI.|sudo kismet -c wlan1mon
 Wireless|reaver|reaver|cli|WPS PIN brute-force to recover the WPA passphrase.|sudo reaver -i wlan1mon -b BSSID -vv
